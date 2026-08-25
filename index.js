@@ -48,6 +48,8 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, () => {
     console.log(`[Web Server] Đang lắng nghe trên cổng: ${PORT}`);
+}).on('error', (e) => {
+    console.log('[Web Server Notice]', e.message);
 });
 
 // 2. Khởi tạo Discord Bot Client
@@ -84,7 +86,7 @@ const commands = [
         .setDescription('Xem danh sách hướng dẫn lệnh')
 ].map(command => command.toJSON());
 
-// Hàm kết nối và duy trì Voice 24/7 với tự động kết nối lại
+// Hàm kết nối và duy trì Voice 24/7
 function connectToVoice(channel) {
     const connection = joinVoiceChannel({
         channelId: channel.id,
@@ -125,12 +127,11 @@ client.once(Events.ClientReady, async (c) => {
             Routes.applicationCommands(c.user.id),
             { body: commands }
         );
-        console.log('[Slash Commands] Đã đăng ký Global commands');
     } catch (err) {
         console.error('[Slash Commands Global Error]', err.message);
     }
 
-    // 2. Đăng ký tức thì cho từng Guild (Server) để hiển thị Slash Command ngay lập tức
+    // 2. Đăng ký tức thì cho từng Guild (Server)
     for (const guild of c.guilds.cache.values()) {
         try {
             await rest.put(
@@ -143,7 +144,7 @@ client.once(Events.ClientReady, async (c) => {
         }
     }
 
-    // Tự động vào phòng Voice cố định nếu có thiết lập VOICE_CHANNEL_ID
+    // Tự động vào phòng Voice nếu có cấu hình VOICE_CHANNEL_ID
     const autoVoiceId = process.env.VOICE_CHANNEL_ID;
     if (autoVoiceId) {
         try {
@@ -171,25 +172,14 @@ client.once(Events.ClientReady, async (c) => {
     setInterval(updatePresence, 15 * 60 * 1000);
 });
 
-// Khi bot được thêm vào server mới -> Nạp lệnh ngay
-client.on(Events.GuildCreate, async (guild) => {
-    try {
-        const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-        await rest.put(
-            Routes.applicationGuildCommands(client.user.id, guild.id),
-            { body: commands }
-        );
-        console.log(`[Guild Join] Đã nạp lệnh cho server mới: ${guild.name}`);
-    } catch (err) {
-        console.error(`[Guild Join Error]`, err.message);
-    }
-});
-
-// Xử lý Slash Commands
+// Xử lý Slash Commands (Dùng deferReply để không bao giờ bị timeout "Ứng dụng không phản hồi")
 client.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
 
     const { commandName } = interaction;
+
+    // Phản hồi ngay lập tức để Discord biết bot đang xử lý (tránh lỗi 3s timeout)
+    await interaction.deferReply();
 
     // Lệnh /join
     if (commandName === 'join') {
@@ -200,7 +190,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
             voiceChannel = interaction.member?.voice?.channel;
         }
 
-        // 2. Nếu người dùng chưa vào phòng nào, tự động tìm phòng thoại đầu tiên trong server
+        // 2. Nếu không có, tự động tìm phòng thoại đầu tiên trong server
         if (!voiceChannel) {
             voiceChannel = interaction.guild.channels.cache.find(
                 ch => ch.type === ChannelType.GuildVoice || ch.type === ChannelType.GuildStageVoice
@@ -208,21 +198,19 @@ client.on(Events.InteractionCreate, async (interaction) => {
         }
 
         if (!voiceChannel) {
-            return interaction.reply({
-                content: '❌ Không tìm thấy phòng thoại (Voice Channel) nào trong máy chủ này!',
-                ephemeral: true
+            return interaction.editReply({
+                content: '❌ Không tìm thấy phòng thoại (Voice Channel) nào trong máy chủ này!'
             });
         }
 
         try {
             connectToVoice(voiceChannel);
-            return interaction.reply({
-                content: `✅ Đã tham gia phòng thoại **${voiceChannel.name}** và sẽ treo 24/7!`,
+            return interaction.editReply({
+                content: `✅ Đã tham gia phòng thoại **${voiceChannel.name}** và sẽ treo 24/7!`
             });
         } catch (err) {
-            return interaction.reply({
-                content: `❌ Lỗi khi vào phòng thoại: ${err.message}`,
-                ephemeral: true
+            return interaction.editReply({
+                content: `❌ Lỗi khi vào phòng thoại: ${err.message}`
             });
         }
     }
@@ -231,18 +219,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (commandName === 'leave') {
         const connection = getVoiceConnection(interaction.guildId);
         if (!connection) {
-            return interaction.reply({ content: '❌ Bot hiện không ở trong phòng thoại nào!', ephemeral: true });
+            return interaction.editReply({ content: '❌ Bot hiện không ở trong phòng thoại nào!' });
         }
 
         connection.destroy();
-        return interaction.reply({ content: '👋 Bot đã rời khỏi phòng thoại!' });
+        return interaction.editReply({ content: '👋 Bot đã rời khỏi phòng thoại!' });
     }
 
     // Lệnh /ping
     if (commandName === 'ping') {
         const ping = Date.now() - interaction.createdTimestamp;
         const apiPing = Math.round(client.ws.ping);
-        return interaction.reply(`🏓 **Pong!**\n- Độ trễ tin nhắn: \`${ping}ms\`\n- Độ trễ Discord API: \`${apiPing}ms\``);
+        return interaction.editReply(`🏓 **Pong!**\n- Độ trễ tin nhắn: \`${ping}ms\`\n- Độ trễ Discord API: \`${apiPing}ms\``);
     } 
 
     // Lệnh /status
@@ -265,7 +253,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
             .setFooter({ text: 'Treo máy & Voice Discord 24/7' })
             .setTimestamp();
 
-        return interaction.reply({ embeds: [embed] });
+        return interaction.editReply({ embeds: [embed] });
     } 
 
     // Lệnh /help
@@ -283,7 +271,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
             )
             .setFooter({ text: 'Treo máy & Voice Discord 24/7' });
 
-        return interaction.reply({ embeds: [embed] });
+        return interaction.editReply({ embeds: [embed] });
     }
 });
 
