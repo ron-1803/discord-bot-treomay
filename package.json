@@ -1,0 +1,16 @@
+{
+  "name": "discord_treomay_bot",
+  "version": "1.0.0",
+  "description": "Discord Bot Treo Máy 24/7",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "discord.js": "^14.17.3",
+    "dotenv": "^16.4.7"
+  }
+}
