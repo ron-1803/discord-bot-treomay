@@ -50,7 +50,7 @@ server.listen(PORT, () => {
     console.log(`[Web Server] Đang lắng nghe trên cổng: ${PORT}`);
 });
 
-// 2. Khởi tạo Discord Bot Client (Thêm GuildVoiceStates để vào Voice Call)
+// 2. Khởi tạo Discord Bot Client
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -72,7 +72,7 @@ const commands = [
         .setDescription('Bảo bot vào kênh thoại (Voice Channel) để treo 24/7')
         .addChannelOption(option => 
             option.setName('channel')
-                .setDescription('Chọn phòng Voice (để trống nếu muốn bot vào phòng bạn đang đứng)')
+                .setDescription('Chọn phòng Voice (để trống để bot tự chọn phòng)')
                 .addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice)
                 .setRequired(false)
         ),
@@ -84,7 +84,7 @@ const commands = [
         .setDescription('Xem danh sách hướng dẫn lệnh')
 ].map(command => command.toJSON());
 
-// Hàm kết nối và duy trì Voice 24/7 với chế độ tự động phục hồi kết nối
+// Hàm kết nối và duy trì Voice 24/7 với tự động kết nối lại
 function connectToVoice(channel) {
     const connection = joinVoiceChannel({
         channelId: channel.id,
@@ -100,9 +100,7 @@ function connectToVoice(channel) {
                 entersState(connection, VoiceConnectionStatus.Signalling, 5000),
                 entersState(connection, VoiceConnectionStatus.Connecting, 5000),
             ]);
-            // Kết nối lại thành công
         } catch {
-            // Nếu bị mất mạng hoặc kick, tự động kết nối lại sau 5 giây
             console.log(`[Voice] Mất kết nối phòng ${channel.name}, đang kết nối lại...`);
             setTimeout(() => connectToVoice(channel), 5000);
         }
@@ -119,19 +117,33 @@ client.once(Events.ClientReady, async (c) => {
     console.log(`[Discord] Đang trực thuộc ${c.guilds.cache.size} server`);
     console.log('================================================');
 
-    // Đăng ký Slash Commands
+    const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+
+    // 1. Đăng ký Global Commands
     try {
-        const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
         await rest.put(
             Routes.applicationCommands(c.user.id),
             { body: commands }
         );
-        console.log('[Slash Commands] Đã cập nhật thành công các lệnh (/join, /leave, /ping, /status, /help)');
+        console.log('[Slash Commands] Đã đăng ký Global commands');
     } catch (err) {
-        console.error('[Slash Commands Error]', err.message);
+        console.error('[Slash Commands Global Error]', err.message);
     }
 
-    // Tự động vào phòng Voice cố định nếu có thiết lập VOICE_CHANNEL_ID trong biến môi trường
+    // 2. Đăng ký tức thì cho từng Guild (Server) để hiển thị Slash Command ngay lập tức
+    for (const guild of c.guilds.cache.values()) {
+        try {
+            await rest.put(
+                Routes.applicationGuildCommands(c.user.id, guild.id),
+                { body: commands }
+            );
+            console.log(`[Slash Commands] Đã nạp tức thì cho server: ${guild.name}`);
+        } catch (err) {
+            console.error(`[Guild Command Error - ${guild.name}]`, err.message);
+        }
+    }
+
+    // Tự động vào phòng Voice cố định nếu có thiết lập VOICE_CHANNEL_ID
     const autoVoiceId = process.env.VOICE_CHANNEL_ID;
     if (autoVoiceId) {
         try {
@@ -144,7 +156,7 @@ client.once(Events.ClientReady, async (c) => {
         }
     }
 
-    // Cài đặt trạng thái hoạt động (Status / Presence)
+    // Cài đặt trạng thái hoạt động
     const updatePresence = () => {
         c.user.setPresence({
             activities: [{
@@ -159,6 +171,20 @@ client.once(Events.ClientReady, async (c) => {
     setInterval(updatePresence, 15 * 60 * 1000);
 });
 
+// Khi bot được thêm vào server mới -> Nạp lệnh ngay
+client.on(Events.GuildCreate, async (guild) => {
+    try {
+        const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+        await rest.put(
+            Routes.applicationGuildCommands(client.user.id, guild.id),
+            { body: commands }
+        );
+        console.log(`[Guild Join] Đã nạp lệnh cho server mới: ${guild.name}`);
+    } catch (err) {
+        console.error(`[Guild Join Error]`, err.message);
+    }
+});
+
 // Xử lý Slash Commands
 client.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
@@ -169,14 +195,21 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (commandName === 'join') {
         let voiceChannel = interaction.options.getChannel('channel');
 
-        // Nếu không chọn phòng, lấy phòng của người dùng đang đứng
+        // 1. Kiểm tra phòng thoại người dùng đang đứng
         if (!voiceChannel) {
             voiceChannel = interaction.member?.voice?.channel;
         }
 
+        // 2. Nếu người dùng chưa vào phòng nào, tự động tìm phòng thoại đầu tiên trong server
+        if (!voiceChannel) {
+            voiceChannel = interaction.guild.channels.cache.find(
+                ch => ch.type === ChannelType.GuildVoice || ch.type === ChannelType.GuildStageVoice
+            );
+        }
+
         if (!voiceChannel) {
             return interaction.reply({
-                content: '❌ Bạn cần vào một phòng thoại trước, hoặc chọn một phòng trong tuỳ chọn lệnh!',
+                content: '❌ Không tìm thấy phòng thoại (Voice Channel) nào trong máy chủ này!',
                 ephemeral: true
             });
         }
@@ -242,7 +275,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
             .setTitle('📖 Danh Sách Lệnh Của Bot')
             .setDescription('Bot hỗ trợ treo máy và treo phòng thoại (Voice) liên tục 24/7:')
             .addFields(
-                { name: '`/join`', value: 'Gọi bot vào phòng Voice (bạn đang đứng hoặc chỉ định)' },
+                { name: '`/join`', value: 'Gọi bot vào phòng Voice (tự động vào phòng bạn đứng hoặc phòng có sẵn)' },
                 { name: '`/leave`', value: 'Cho bot rời khỏi phòng Voice' },
                 { name: '`/ping`', value: 'Kiểm tra tốc độ phản hồi của bot' },
                 { name: '`/status`', value: 'Kiểm tra thông số ram, uptime và trạng thái Voice' },
